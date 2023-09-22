@@ -6,19 +6,25 @@ import argparse
 import csv
 from abc import ABC, abstractmethod
 
+
 class OpInfo:
-    def __init__(self, op_name, freq, since_version, model_name):
-        self.op_name = op_name
+    def __init__(self, op_type, freq, since_version, model_name, op_dtype, op_dim):
+        self.op_type = op_type
         self.freq = freq
         self.since_version = since_version
         self.model_name = model_name
+        self.op_dtype = op_dtype
+        self.op_dim = op_dim
 
 
 class ONNXModelInfo:
 
-    def __init__(self, model_path):
+    def __init__(self, model_path, aux = False):
         self.model_path = model_path
         self.model = onnx.load(model_path)
+        self.op_counts, self.op_inputs = self.get_op_counts()
+        if(aux):
+            self.name_dtype, self.name_dim = self.get_ops_dtype_dim()
 
     def get_model_name(self):
         model_name = os.path.basename(self.model_path)
@@ -42,8 +48,10 @@ class ONNXModelInfo:
     def get_producer(self):
         name = self.model.producer_name
         version = self.model.producer_version
-        if name == "" and version == "": producer = "Absence"
-        else: producer = f"{name} {version}"
+        if name == "" and version == "":
+            producer = "NaN"
+        else:
+            producer = f"{name} {version}"
         return producer
 
     @staticmethod
@@ -63,7 +71,7 @@ class ONNXModelInfo:
             TensorProto.UINT32: "uint32",
             TensorProto.UINT64: "uint64",
         }
-        return data_type_names.get(data_type, "Absence")
+        return data_type_names.get(data_type, "NaN")
 
     def get_input_dtype(self):
         input_types = set()
@@ -74,16 +82,69 @@ class ONNXModelInfo:
         return ",".join(input_types)
 
     def get_op_counts(self):
-        op_counts = {}  
-        
+        """
+        Returns:
+            op_counts[dict]: key is type of op, value is the frequency of each op
+            op_inputs[dict]: key is type of op, value is the total input of each op
+        """
+        op_counts = {}
+        op_inputs = {}
+
         for node in self.model.graph.node:
             op_type = node.op_type
-            if op_type in op_counts:
-                op_counts[op_type] += 1
+            if(len(node.input) > 0):
+                if op_type in op_counts:
+                    op_counts[op_type] += 1
+                    op_inputs[op_type].append(node.input[0])
+                else:
+                    op_counts[op_type] = 1
+                    op_inputs[op_type] = [node.input[0]]
+
+        return op_counts, op_inputs
+
+    def get_ops_dtype_dim(self):
+        """
+        obtain the name of single op and its corresponding dim and dtype
+        """
+        if not self.model.graph.value_info:
+            print(f"No value_info found in {self.get_model_name()}, performing shape inference")
+            shape_info = onnx.shape_inference.infer_shapes(self.model)
+        else:
+            shape_info = self.model
+        name_dtype = {}
+        name_dim = {}
+        tensor_type = shape_info.graph.input[0].type.tensor_type
+        elem_type = tensor_type.elem_type
+        readable_type = self.get_readable_data_type(elem_type)
+        in_name = shape_info.graph.input[0].name
+        name_dtype[in_name] = readable_type
+        name_dim[in_name] = len(tensor_type.shape.dim)
+        for value_info in shape_info.graph.value_info:
+            elem_type = value_info.type.tensor_type.elem_type
+            readable_type = self.get_readable_data_type(elem_type)
+            in_name = value_info.name
+            name_dtype[in_name] = readable_type
+            name_dim[in_name] = len(value_info.type.tensor_type.shape.dim)
+
+        return name_dtype, name_dim
+
+    def get_op_dtype(self, op_type):
+        dtype = set()
+        for input in self.op_inputs[op_type]:
+            if input in self.name_dtype:
+                dtype.add(self.name_dtype[input])
             else:
-                op_counts[op_type] = 1
-        
-        return op_counts
+                dtype.add("NaN")
+        return ",".join(dtype)
+
+    def get_op_dim(self, op_type):
+        dim = set()
+        for input in self.op_inputs[op_type]:
+            if input in self.op_inputs:
+               dim.add(str(self.name_dim[input]))
+            else:
+                dim.add("NaN")
+        return ",".join(dim)
 
 
 class CSVExporter(ABC):
@@ -96,7 +157,7 @@ class CSVExporter(ABC):
     def get_header_data(self):
         """
         get header and data for csv file from onnx model_paths
-        
+
         Returns:
         header[list] and datas[2d list]
         """
@@ -148,12 +209,12 @@ class OpsListCSV(CSVExporter):
     def get_header_data(self):
         header = ['idx', 'op_type', 'is_standard']
         datas = []
-        op_names = dict()
+        op_types = dict()
         for path in self.model_paths:
             model = ONNXModelInfo(path)
-            op_names.update(model.get_op_counts())
+            op_types.update(model.op_counts)
         idx = 1
-        for op in sorted(op_names):
+        for op in sorted(op_types):
             data = []
             data.append(idx)
             data.append(op)
@@ -163,6 +224,7 @@ class OpsListCSV(CSVExporter):
 
         return header, datas
 
+
 class OpsInfoCSV(CSVExporter):
 
     def __init__(self, model_paths, output_name):
@@ -171,29 +233,35 @@ class OpsInfoCSV(CSVExporter):
         self.onnx_ops = {schema.name for schema in schemas}
 
     def get_header_data(self):
-        header = ['idx', 'op_type', 'freq', 'opsets', 'from_model', "is_standard"]
+        header = ['idx', 'op_type', 'freq', 'opsets', 'input_dim',
+                  'input_dtype', 'from_model', "is_standard"]
         datas = []
         ops = []
         for path in self.model_paths:
-            model = ONNXModelInfo(path)
-            ops_dict = model.get_op_counts()
-            for op_name in ops_dict:
-                op_info=OpInfo(op_name, ops_dict[op_name], model.get_opset(), model.get_model_name())
+            model = ONNXModelInfo(path, True)
+            ops_dict = model.op_counts
+            for op_type in ops_dict:
+                op_info = OpInfo(op_type, ops_dict[op_type], model.get_opset(), 
+                                 model.get_model_name(), 
+                                 model.get_op_dtype(op_type), model.get_op_dim(op_type))
                 ops.append(op_info)
 
         idx = 1
         for op in sorted(ops, key=lambda op: op.freq, reverse=True):
             data = []
             data.append(idx)
-            data.append(op.op_name)
+            data.append(op.op_type)
             data.append(op.freq)
             data.append(op.since_version)
+            data.append(op.op_dim)
+            data.append(op.op_dtype)
             data.append(op.model_name)
-            data.append("Yes" if op.op_name in self.onnx_ops else "No")
+            data.append("Yes" if op.op_type in self.onnx_ops else "No")
             datas.append(data)
             idx += 1
 
         return header, datas
+
 
 class Config:
 
@@ -209,10 +277,10 @@ class Config:
     def find_onnx_paths(self, file_path):
         """
         extract paths of onnx model from folder
-        
+
         Parameters:
         filepath - may be onnx model path or folder path which contains onnx model
-        
+
         Returns[list]:
         onnx model path
         """

@@ -5,6 +5,7 @@ import yaml
 import argparse
 import csv
 from abc import ABC, abstractmethod
+from collections import Counter
 
 
 class OpInfo:
@@ -209,7 +210,7 @@ class OpsListCSV(CSVExporter):
     def get_header_data(self):
         header = ['idx', 'op_type', 'freq', 'is_standard']
         datas = []
-        op_types = dict()
+        op_types = Counter()
         for path in self.model_paths:
             model = ONNXModelInfo(path)
             op_types.update(model.op_counts)

@@ -207,7 +207,7 @@ class OpsListCSV(CSVExporter):
         self.onnx_ops = {schema.name for schema in schemas}
 
     def get_header_data(self):
-        header = ['idx', 'op_type', 'is_standard']
+        header = ['idx', 'op_type', 'freq', 'is_standard']
         datas = []
         op_types = dict()
         for path in self.model_paths:
@@ -218,6 +218,7 @@ class OpsListCSV(CSVExporter):
             data = []
             data.append(idx)
             data.append(op)
+            data.append(op_types[op])
             data.append("Yes" if op in self.onnx_ops else "No")
             datas.append(data)
             idx += 1

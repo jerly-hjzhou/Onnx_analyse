@@ -107,7 +107,7 @@ class ONNXModelInfo:
         """
         obtain the name of single op and its corresponding dim and dtype
         """
-        if not self.model.graph.value_info:
+        if not self.model.graph.value_info and len(self.model.graph.input) == 1:
             print(f"No value_info found in {self.get_model_name()}, performing shape inference")
             shape_info = onnx.shape_inference.infer_shapes(self.model)
         else:

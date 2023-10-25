@@ -164,9 +164,12 @@ class CSVExporter(ABC):
         """
         pass
 
-    def export(self):
+    def export(self, output):
         header, datas = self.get_header_data()
-        with open(self.output_name, 'w', encoding='UTF8', newline='') as f:
+        if not output.endswith("/"):
+            output += "/" 
+        os.makedirs(output, exist_ok=True)
+        with open(output+self.output_name, 'w', encoding='UTF8', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(header)
             writer.writerows(datas)
@@ -307,6 +310,10 @@ def parse_args():
     parser.add_argument('--config',
                         type=str,
                         help='configure path of onnx models')
+    parser.add_argument('--output',
+                        type=str,
+                        default="./output",
+                        help='specify the output folder of files')
     args = parser.parse_args()
     return args
 
@@ -318,8 +325,8 @@ if __name__ == "__main__":
     else:
         model_paths = Config(args.config).get_model_paths()
     model_info = ModelInfosCSV(model_paths, "model_information.csv")
-    model_info.export()
+    model_info.export(args.output)
     op_list = OpsListCSV(model_paths, "op_type_list.csv")
-    op_list.export()
+    op_list.export(args.output)
     op_info = OpsInfoCSV(model_paths, "op_info.csv")
-    op_info.export()
+    op_info.export(args.output)
